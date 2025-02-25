@@ -143,52 +143,45 @@ app.delete('/students/:studentid', async (req, res) => {
 
 
 app.post('/api/add_student_to_assignment', async (req, res) => {
-    console.log("Incoming request body:", req.body); // Log the incoming request body
+    console.log(req.body); // Log the incoming body for debugging
 
-    // Destructure the necessary fields from the body
+    // ดึงข้อมูลจาก body
     const { studentid, name, course, assignment_id, assignment_name, year } = req.body;
 
-    // Check for missing required fields
+    // ตรวจสอบว่าข้อมูลที่จำเป็นถูกส่งมาหรือไม่
     if (!studentid || !name || !course || !assignment_id || !assignment_name || !year) {
-        console.log('Missing required fields:', { studentid, name, course, assignment_id, assignment_name, year });
+        console.log('Missing required fields:', { studentid, name, course, assignment_id, assignment_name, year });  // เพิ่ม log สำหรับตรวจสอบ
         return res.status(400).json({
             message: "All fields (studentid, name, course, assignment_id, assignment_name, year) are required",
         });
     }
 
-    // Construct the SQL query to insert data into the database
+    // Query สำหรับเพิ่มข้อมูลลงในฐานข้อมูล
     const query = `
         INSERT INTO Assignments_Students (studentid, name, course, assignment_id, assignment_name, year, created_at)
         VALUES (?, ?, ?, ?, ?, ?, NOW())
     `;
-    console.log('SQL Query:', query); // Log the query
 
     try {
-        // Connect to the database
-        console.log("Attempting to connect to the database...");
+        // เชื่อมต่อฐานข้อมูล
         const conn = await pool.getConnection();
-        console.log("Database connection established:", conn.threadId); // Log the connection thread ID
-
-        // Execute the query to insert data
-        console.log("Executing query...");
+        
+        // ทำการ query ข้อมูล
         await conn.query(query, [studentid, name, course, assignment_id, assignment_name, year]);
-
-        // Release the connection after the query is executed
+        
+        // ปล่อยการเชื่อมต่อ
         conn.release();
-        console.log("Connection released.");
-
-        // Send a success response to the client
+        
+        // ส่งการตอบกลับไปยัง Frontend
         res.status(200).json({
             message: 'Student added to assignment successfully'
         });
     } catch (err) {
-        // Log the error with a detailed stack trace
-        console.error("Database error:", err.message);
-        console.error("Stack trace:", err.stack); // Log the stack trace for debugging
+        console.error("Database error:", err); // Log detailed error information
         res.status(500).json({
             message: 'Failed to add student to assignment',
-            error: err.message,
-            stack: err.stack
+            error: err.message, // ส่ง error message
+            stack: err.stack // ส่ง stack trace สำหรับ debugging
         });
     }
 });
@@ -279,9 +272,9 @@ app.post('/api/save_assignment_clo', async (req, res) => {
         // เริ่มต้นการทำงานกับฐานข้อมูลโดยใช้ query batch
         const queries = data.map(item => {
             return conn.query(`
-                INSERT INTO Assignment_CLO_Selection (student_id, clo_id, assignment_id, score) 
-                VALUES (?, ?, ?, ?)`, 
-                [item.student_id, item.clo_id, item.assignment_id, item.score]  // เพิ่ม 'score'
+                INSERT INTO Assignment_CLO_Selection (student_id, clo_id, assignment_id, score, weight) 
+                VALUES (?, ?, ?, ?, ?)`, 
+                [item.student_id, item.clo_id, item.assignment_id, item.score, item.weight]  // เพิ่ม 'score'
             );
         });
         
@@ -492,6 +485,99 @@ app.post('/api/add_assignment', async (req, res) => {
         res.status(500).json({ message: 'เกิดข้อผิดพลาดในการบันทึกข้อมูล' });
     }
 });
+
+// DELETE Assignment
+app.delete('/api/delete_assignment/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+      const conn = await pool.getConnection();
+      const query = 'DELETE FROM assignments WHERE assignment_id = ?';
+      await conn.query(query, [id]);
+      conn.release();
+      res.status(200).json({ message: 'Assignment deleted successfully' });
+    } catch (err) {
+      console.error('Error deleting assignment:', err);
+      res.status(500).json({ message: 'Failed to delete assignment' });
+    }
+  });
+  
+  // UPDATE Assignment
+  // UPDATE Assignment (ไม่ต้องตรวจสอบความครบถ้วน)
+
+  app.put('/api/update_assignment/:id', async (req, res) => {
+    const { id } = req.params;
+    const { assignment_name, course } = req.body;
+
+    try {
+        const conn = await pool.getConnection();
+
+        // ✅ 1. เตรียมการอัปเดตสำหรับตาราง assignments
+        let assignmentQuery = 'UPDATE assignments SET ';
+        const assignmentParams = [];
+        
+        if (assignment_name) {
+            assignmentQuery += 'assignment_name = ?, ';
+            assignmentParams.push(assignment_name);
+        }
+        if (course) {
+            assignmentQuery += 'course_name = ?, ';
+            assignmentParams.push(course);
+        }
+
+        // ถ้าไม่มีฟิลด์ที่เปลี่ยนแปลง ไม่ต้องอัปเดต
+        if (assignmentParams.length === 0) {
+            conn.release();
+            return res.status(400).json({ message: 'ไม่มีฟิลด์ที่ต้องอัปเดต' });
+        }
+
+        assignmentQuery = assignmentQuery.slice(0, -2); // ลบเครื่องหมาย , ที่ท้ายสุด
+        assignmentQuery += ' WHERE assignment_id = ?';
+        assignmentParams.push(id);
+
+        const assignmentResult = await conn.query(assignmentQuery, assignmentParams);
+
+        if (assignmentResult.affectedRows === 0) {
+            conn.release();
+            return res.status(404).json({ message: 'Assignment not found' });
+        }
+
+        // ✅ 2. เตรียมการอัปเดตสำหรับตาราง Assignments_Students
+        let studentQuery = 'UPDATE Assignments_Students SET ';
+        const studentParams = [];
+
+        if (assignment_name) {
+            studentQuery += 'assignment_name = ?, ';
+            studentParams.push(assignment_name);
+        }
+        if (course) {
+            studentQuery += 'course = ?, ';
+            studentParams.push(course);
+        }
+
+        // อัปเดตเฉพาะฟิลด์ที่มีการเปลี่ยนแปลง
+        if (studentParams.length > 0) {
+            studentQuery = studentQuery.slice(0, -2); // ลบเครื่องหมาย , ที่ท้ายสุด
+            studentQuery += ' WHERE assignment_id = ?';
+            studentParams.push(id);
+
+            const studentsResult = await conn.query(studentQuery, studentParams);
+            if (studentsResult.affectedRows === 0) {
+                console.warn('Warning: No student records were updated.');
+            }
+        }
+
+        conn.release();
+        res.status(200).json({ message: 'Assignment and student records updated successfully' });
+
+    } catch (err) {
+        console.error('Error updating assignment:', err);
+        res.status(500).json({ message: 'Failed to update assignment and student records' });
+    }
+});
+
+  
+  
+  
 
 // เพิ่ม API สำหรับการดึง assignments
 app.get('/api/get_assignments', async (req, res) => {
